@@ -1,0 +1,64 @@
+# =====================================================================
+# Chatterbox-Flash Turkish Fine-Tuning Configuration
+# =====================================================================
+
+# --- Paths ---
+model_dir: "models"
+metadata_path: "data/raw/metadata.csv"
+wav_dir: "data/raw/wavs"
+preprocessed_dir: "data/processed"
+output_dir: "checkpoints"
+sample_output_dir: "inference_samples"
+
+# --- Audio & VAD Settings ---
+s3_sample_rate: 24000
+vad_sample_rate: 16000
+prompt_duration: 3.0
+use_vad: true
+
+# --- Tokenizer & Sequence ---
+max_text_len: 256
+max_speech_len: 850
+
+# --- Block Diffusion Settings ---
+block_size: 16
+min_mask_ratio: 0.15
+max_mask_ratio: 1.0
+uncond_prob: 0.15
+
+# --- Training Hyperparameters ---
+use_lora: true
+batch_size: 16
+grad_accum: 1
+learning_rate: 0.0001
+weight_decay: 0.01
+num_epochs: 10
+warmup_steps: 100
+save_steps: 500
+save_total_limit: 5
+dataloader_num_workers: 4
+mixed_precision: "bf16"
+
+# --- LoRA Parameters ---
+lora_r: 128
+lora_alpha: 256
+lora_dropout: 0.05
+lora_target_modules:
+  - "q_proj"
+  - "k_proj"
+  - "v_proj"
+  - "o_proj"
+  - "gate_proj"
+  - "up_proj"
+  - "down_proj"
+lora_modules_to_save:
+  - "text_emb"
+
+# --- Evaluation / Audio Sample Callback ---
+eval_prompt_path: "data/raw/reference.wav"
+eval_steps: 500
+eval_sample_texts:
+  - "Merhaba, bu Chatterbox-Flash Türkçe fine-tuning test sesidir."
+  - "Ağaçların altındaki soğuk su kaynağından taze su içtik."
+  - "Yapay zeka teknolojileri her geçen gün daha da gelişiyor, değil mi?"
+  - "Ses modelimiz şu an Türkçe dil kalıplarını başarıyla öğrenmektedir."
