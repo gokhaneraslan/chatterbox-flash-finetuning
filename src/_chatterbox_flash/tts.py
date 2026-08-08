@@ -15,11 +15,11 @@ import torch.nn.functional as F
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 
-from _chatterbox.models.s3gen import S3GEN_SR, S3Gen
-from _chatterbox.models.s3tokenizer import S3_SR
-from _chatterbox.models.t3.modules.cond_enc import T3Cond
-from _chatterbox.models.tokenizers import EnTokenizer
-from _chatterbox.models.voice_encoder import VoiceEncoder
+from ._chatterbox.models.s3gen import S3GEN_SR, S3Gen
+from ._chatterbox.models.s3tokenizer import S3_SR
+from ._chatterbox.models.t3.modules.cond_enc import T3Cond
+from ._chatterbox.models.tokenizers import EnTokenizer
+from ._chatterbox.models.voice_encoder import VoiceEncoder
 
 from .model import ChatterboxFlashT3
 from .text_norm import en_us_cleaner
