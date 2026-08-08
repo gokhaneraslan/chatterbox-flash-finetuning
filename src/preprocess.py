@@ -10,20 +10,17 @@ from tqdm import tqdm
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from chatterbox_flash import ChatterboxFlashTTS
+from src._chatterbox_flash import ChatterboxFlashTTS
 from src.config import TrainConfig
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Global Configuration Instance
+
 cfg = TrainConfig()
 
-
 def load_silero_vad():
-    """
-    Loads the Silero VAD model from torch.hub for CPU-friendly silence removal.
-    """
+
     try:
         vad_model, utils = torch.hub.load(
             repo_or_dir='snakers4/silero-vad',
@@ -40,34 +37,27 @@ def load_silero_vad():
 
 
 def apply_silero_vad(wav_24k: torch.Tensor, sr: int, vad_model, get_speech_timestamps) -> torch.Tensor:
-    """
-    Trims leading and trailing silence without losing 24kHz audio fidelity.
-    Calculates timestamp intervals on a 16kHz copy, then crops the original 24kHz audio.
-    """
+
     if vad_model is None or get_speech_timestamps is None:
         return wav_24k
 
-    # 1. Create a 16kHz copy for VAD detection
     resampler_16k = torchaudio.transforms.Resample(sr, cfg.vad_sample_rate)
     wav_16k = resampler_16k(wav_24k).squeeze(0)
 
-    # 2. Get speech timestamps
+
     timestamps = get_speech_timestamps(wav_16k, vad_model, sampling_rate=cfg.vad_sample_rate)
     
     if not timestamps:
-        return wav_24k  # Return original if no speech is detected
+        return wav_24k
 
-    # Get start and end speech timestamps in seconds
     start_sec = timestamps[0]['start'] / cfg.vad_sample_rate
     end_sec = timestamps[-1]['end'] / cfg.vad_sample_rate
 
-    # 3. Crop original 24kHz audio using second timestamps
     start_sample_24k = int(start_sec * cfg.s3_sample_rate)
     end_sample_24k = int(end_sec * cfg.s3_sample_rate)
 
     trimmed_wav_24k = wav_24k[:, start_sample_24k:end_sample_24k]
     
-    # Fallback to original audio if trimmed segment is too short (< 0.5s)
     if trimmed_wav_24k.shape[1] < int(0.5 * cfg.s3_sample_rate):
         return wav_24k
 
@@ -75,16 +65,12 @@ def apply_silero_vad(wav_24k: torch.Tensor, sr: int, vad_model, get_speech_times
 
 
 def load_metadata(metadata_path: str, wav_dir: str):
-    """
-    Reads dataset metadata from LJSpeech CSV (metadata.csv) or JSON / JSONL files.
-    Returns a list of dicts: [{'id': ..., 'text': ...}]
-    """
+
     items = []
     
     if not os.path.exists(metadata_path):
         raise FileNotFoundError(f"Metadata file not found at: {metadata_path}")
 
-    # Parse JSON Format
     if metadata_path.endswith('.json'):
         with open(metadata_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -94,7 +80,6 @@ def load_metadata(metadata_path: str, wav_dir: str):
                 if file_id and text:
                     items.append({"id": file_id, "text": text})
 
-    # Parse JSONL Format
     elif metadata_path.endswith('.jsonl'):
         with open(metadata_path, 'r', encoding='utf-8') as f:
             for line in f:
@@ -105,7 +90,6 @@ def load_metadata(metadata_path: str, wav_dir: str):
                     if file_id and text:
                         items.append({"id": file_id, "text": text})
 
-    # Parse LJSpeech CSV/TXT Format (delimiter '|' or ',')
     elif metadata_path.endswith('.csv') or metadata_path.endswith('.txt'):
         with open(metadata_path, 'r', encoding='utf-8') as f:
             sample = f.read(2048)
@@ -130,27 +114,23 @@ def preprocess(
     prompt_duration: float = cfg.prompt_duration,
     use_vad: bool = cfg.use_vad
 ):
-    """
-    Extracts features (speech tokens, speaker embedding, prompt tokens, text tokens)
-    and saves them into offline .pt cache files for fast training.
-    """
+
     os.makedirs(output_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 1. Load Model (Check local models directory first, then fallback to HF Hub)
     if os.path.exists(model_dir) and len(os.listdir(model_dir)) > 0:
         logger.info(f"Loading Chatterbox-Flash model from local directory: '{model_dir}'...")
-        tts_engine = ChatterboxFlashTTS.from_pretrained(model_dir, device=device)
+        tts_engine = ChatterboxFlashTTS.from_local(model_dir, device=device)
     else:
         logger.warning(f"Local model folder '{model_dir}' not found or empty. Falling back to Hugging Face Hub...")
         tts_engine = ChatterboxFlashTTS.from_pretrained("ResembleAI/chatterbox-flash", device=device)
 
-    # 2. Load Silero VAD
     vad_model, get_speech_timestamps = load_silero_vad() if use_vad else (None, None)
 
-    # 3. Read Metadata
     metadata = load_metadata(metadata_path, wav_dir)
     logger.info(f"Total items found in metadata: {len(metadata)}")
+
+    resampler_24k_to_16k = torchaudio.transforms.Resample(cfg.s3_sample_rate, cfg.s3_tokenizer_sample_rate).to(device)
 
     success_count = 0
     SPEECH_STOP_ID = cfg.speech_stop_id
@@ -160,7 +140,6 @@ def preprocess(
             file_id = item["id"]
             raw_text = item["text"]
 
-            # Locate Audio File (.wav or .mp3)
             wav_path = os.path.join(wav_dir, f"{file_id}.wav")
             if not os.path.exists(wav_path):
                 wav_path = os.path.join(wav_dir, f"{file_id}.mp3")
@@ -168,49 +147,44 @@ def preprocess(
                     logger.warning(f"Audio file not found for ID: {file_id}, skipping.")
                     continue
 
-            # Load Audio and Convert to Mono
             wav, sr = torchaudio.load(wav_path)
             if wav.shape[0] > 1:
                 wav = wav.mean(dim=0, keepdim=True)
 
-            # Resample to 24kHz
             if sr != cfg.s3_sample_rate:
                 resampler = torchaudio.transforms.Resample(sr, cfg.s3_sample_rate)
                 wav = resampler(wav)
 
-            # Non-destructive VAD Silence Trimming
             if use_vad and vad_model is not None:
                 wav = apply_silero_vad(wav, cfg.s3_sample_rate, vad_model, get_speech_timestamps)
 
-            wav_device = wav.to(device)
+            wav_24k_device = wav.to(device)
+
+            wav_16k_device = resampler_24k_to_16k(wav_24k_device)
 
             with torch.no_grad():
-                # A. Extract Speaker Embedding (Voice Encoder)
-                wav_np = wav_device.cpu().squeeze().numpy()
-                spk_emb_np = tts_engine.ve.embeds_from_wavs([wav_np], sample_rate=cfg.s3_sample_rate)
+
+                wav_np_24k = wav_24k_device.cpu().squeeze().numpy()
+                spk_emb_np = tts_engine.ve.embeds_from_wavs([wav_np_24k], sample_rate=cfg.s3_sample_rate)
                 speaker_emb = torch.from_numpy(spk_emb_np[0]).cpu()
 
-                # B. Extract Speech Tokens (S3Gen Tokenizer)
-                s_tokens, _ = tts_engine.s3gen.tokenizer(wav_device.unsqueeze(0))
-                raw_speech_tokens = s_tokens.squeeze().cpu()
+                s_tokens, _ = tts_engine.s3gen.tokenizer(wav_16k_device.unsqueeze(0))
+                raw_speech_tokens = torch.atleast_1d(s_tokens.squeeze().cpu())
                 
                 stop_speech_tensor = torch.tensor([SPEECH_STOP_ID], dtype=raw_speech_tokens.dtype)
                 speech_tokens = torch.cat([raw_speech_tokens, stop_speech_tensor], dim=0)
 
-                # C. Extract Prompt Tokens (Reference Speech Slice)
-                prompt_samples = int(prompt_duration * cfg.s3_sample_rate)
-                if wav_device.shape[1] < prompt_samples:
-                    prompt_wav = torch.nn.functional.pad(wav_device, (0, prompt_samples - wav_device.shape[1]))
+                prompt_samples_16k = int(prompt_duration * cfg.s3_tokenizer_sample_rate)
+                if wav_16k_device.shape[1] < prompt_samples_16k:
+                    prompt_wav_16k = torch.nn.functional.pad(wav_16k_device, (0, prompt_samples_16k - wav_16k_device.shape[1]))
                 else:
-                    prompt_wav = wav_device[:, :prompt_samples]
+                    prompt_wav_16k = wav_16k_device[:, :prompt_samples_16k]
 
-                p_tokens, _ = tts_engine.s3gen.tokenizer(prompt_wav.unsqueeze(0))
-                prompt_tokens = p_tokens.squeeze().cpu()
+                p_tokens, _ = tts_engine.s3gen.tokenizer(prompt_wav_16k.unsqueeze(0))
+                prompt_tokens = torch.atleast_1d(p_tokens.squeeze().cpu())
 
-                # D. Extract Text Tokens using the pre-configured Tokenizer
-                text_tokens = tts_engine.tokenizer.text_to_tokens(raw_text).squeeze(0).cpu()
+                text_tokens = torch.atleast_1d(tts_engine.tokenizer.text_to_tokens(raw_text).squeeze(0).cpu())
 
-            # Save processed features as PyTorch binary file
             save_path = os.path.join(output_dir, f"{file_id}.pt")
             torch.save({
                 "speech_tokens": speech_tokens,

@@ -7,43 +7,38 @@ import torch
 from pathlib import Path
 from peft import PeftModel
 
-# Add project root directory to Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from chatterbox_flash import ChatterboxFlashTTS
+from src._chatterbox_flash import ChatterboxFlashTTS
 from safetensors.torch import load_file
+from src.config import TrainConfig
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+cfg = TrainConfig()
 
 def load_model_for_inference(
-    model_dir: str = "models",
+    model_dir: str = cfg.model_dir,
     lora_dir: str = None,
     full_checkpoint: str = None,
     device: str = "cuda"
 ) -> ChatterboxFlashTTS:
-    """
-    Loads base Chatterbox-Flash pipeline and applies trained LoRA weights or full checkpoint if provided.
-    """
+
     device = torch.device(device if torch.cuda.is_available() else "cpu")
 
-    # 1. Load Base Chatterbox-Flash Pipeline
     if os.path.exists(model_dir) and len(os.listdir(model_dir)) > 0:
         logger.info(f"Loading base Chatterbox-Flash model from local directory: '{model_dir}'...")
-        tts_engine = ChatterboxFlashTTS.from_pretrained(model_dir, device=device)
+        tts_engine = ChatterboxFlashTTS.from_local(model_dir, device=device)
     else:
-        logger.info(f"Local model directory '{model_dir}' not found. Downloading base model from HF Hub...")
+        logger.info(f"Local model directory '{model_dir}' not found or empty. Downloading base model from HF Hub...")
         tts_engine = ChatterboxFlashTTS.from_pretrained("ResembleAI/chatterbox-flash", device=device)
 
-    # 2. Apply LoRA Adapter if provided
     if lora_dir and os.path.exists(lora_dir):
         logger.info(f"Applying fine-tuned LoRA adapter weights from: '{lora_dir}'...")
         tts_engine.t3 = PeftModel.from_pretrained(tts_engine.t3, lora_dir)
         tts_engine.t3.eval()
 
-    # 3. Apply Full Fine-Tuned Checkpoint if provided
     elif full_checkpoint and os.path.exists(full_checkpoint):
         logger.info(f"Loading full fine-tuned safetensors checkpoint from: '{full_checkpoint}'...")
         state_dict = load_file(full_checkpoint)
@@ -62,7 +57,7 @@ def main():
     parser.add_argument("--text", type=str, nargs="+", default=None, help="One or more input sentences to synthesize")
     parser.add_argument("--text_file", type=str, default=None, help="Path to text file containing one sentence per line")
     parser.add_argument("--output_dir", type=str, default="inference_output", help="Directory to save generated .wav files")
-    parser.add_argument("--model_dir", type=str, default="models", help="Directory containing base pretrained model")
+    parser.add_argument("--model_dir", type=str, default=cfg.model_dir, help="Directory containing base pretrained model")
     parser.add_argument("--lora_dir", type=str, default=None, help="Path to trained LoRA adapter directory")
     parser.add_argument("--full_checkpoint", type=str, default=None, help="Path to trained full safetensors checkpoint")
     parser.add_argument("--temperature", type=float, default=0.2, help="Sampling temperature")
@@ -70,7 +65,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Collect Input Texts
     texts = []
     if args.text:
         texts.extend(args.text)
@@ -91,7 +85,6 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # Load Model Pipeline
     tts = load_model_for_inference(
         model_dir=args.model_dir,
         lora_dir=args.lora_dir,
@@ -113,7 +106,6 @@ def main():
             normalize_text=False
         )
 
-    # Save Output Audio Files
     stem = Path(args.audio_prompt).stem
     for idx, (text, wav) in enumerate(zip(texts, wavs)):
         out_filename = f"{stem}_output_{idx:03d}.wav"

@@ -2,36 +2,60 @@ import os
 import logging
 import torch
 import torch.nn as nn
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 
 from peft import LoraConfig, get_peft_model
-from chatterbox_flash import ChatterboxFlashTTS
+from _chatterbox_flash._chatterbox.models.t3.modules.cond_enc import T3Cond
+from src._chatterbox_flash import ChatterboxFlashTTS
 from src.config import TrainConfig
 
 logger = logging.getLogger(__name__)
 
 
+def create_t3_attention_mask(
+    batch_size: int,
+    len_cond: int,
+    len_text: int,
+    len_speech: int,
+    text_token_lens: torch.Tensor,
+    speech_token_lens: torch.Tensor,
+    device: torch.device
+) -> torch.Tensor:
+
+    total_len = len_cond + len_text + len_speech
+    mask = torch.zeros((batch_size, total_len), dtype=torch.bool, device=device)
+
+    for i in range(batch_size):
+        # 1. Conditioning prefix is ALWAYS valid
+        mask[i, :len_cond] = True
+
+        # 2. Valid text tokens (skip text padding)
+        ttl = text_token_lens[i].item()
+        mask[i, len_cond : len_cond + ttl] = True
+
+        # 3. Valid speech tokens (skip speech padding)
+        stl = speech_token_lens[i].item()
+        speech_start = len_cond + len_text
+        mask[i, speech_start : speech_start + stl] = True
+
+    return mask
+
+
 class ChatterboxFlashForTraining(nn.Module):
-    """
-    Training wrapper for Chatterbox-Flash T3 Block-Diffusion model.
-    Encapsulates model initialization, LoRA/PEFT adaptation, and forward loss computation.
-    Reads configuration directly from a TrainConfig instance.
-    """
+    
     def __init__(self, config: Optional[TrainConfig] = None):
         super().__init__()
         self.config = config if config is not None else TrainConfig()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # 1. Load Base Chatterbox-Flash Pipeline
         model_dir = self.config.model_dir
         if os.path.exists(model_dir) and len(os.listdir(model_dir)) > 0:
             logger.info(f"Loading base Chatterbox-Flash pipeline from local directory: '{model_dir}'...")
-            self.tts_engine = ChatterboxFlashTTS.from_pretrained(model_dir, device=self.device)
+            self.tts_engine = ChatterboxFlashTTS.from_local(model_dir, device=self.device)
         else:
             logger.info(f"Local directory '{model_dir}' not found or empty. Downloading from Hugging Face Hub...")
             self.tts_engine = ChatterboxFlashTTS.from_pretrained("ResembleAI/chatterbox-flash", device=self.device)
 
-        # Freeze Voice Encoder (VE) and S3Gen Vocoder (Only T3 Flash Backbone is trained)
         self.tts_engine.ve.eval()
         self.tts_engine.s3gen.eval()
         for param in self.tts_engine.ve.parameters():
@@ -39,10 +63,10 @@ class ChatterboxFlashForTraining(nn.Module):
         for param in self.tts_engine.s3gen.parameters():
             param.requires_grad = False
 
-        # Extract T3 Flash LLaMA Backbone
-        self.t3 = self.tts_engine.t3
 
-        # 2. Apply LoRA or Full Fine-Tuning Setup using TrainConfig
+        self.t3 = self.tts_engine.t3
+        self._patch_t3_forward()
+
         if self.config.use_lora:
             logger.info(
                 f"Setting up LoRA configuration (r={self.config.lora_r}, "
@@ -57,42 +81,144 @@ class ChatterboxFlashForTraining(nn.Module):
                 modules_to_save=self.config.lora_modules_to_save
             )
             self.t3 = get_peft_model(self.t3, peft_config)
+            if hasattr(self.t3, "enable_input_require_grads"):
+                self.t3.enable_input_require_grads()
             self.t3.print_trainable_parameters()
         else:
             logger.info("Configuring model for Full Fine-Tuning (All parameters trainable)...")
             for param in self.t3.parameters():
                 param.requires_grad = True
 
-        # Loss Function for Masked Token Prediction (-100 ignores non-masked / padded tokens)
         self.loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
 
-    def forward(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        """
-        Forward pass for Block-Diffusion training.
+    def _patch_t3_forward(self):
 
-        Batch Expected Keys:
-        - text_tokens: [B, text_seq_len]
-        - prompt_tokens: [B, prompt_seq_len]
-        - masked_speech_tokens: [B, speech_seq_len] (contains [MASK] tokens)
-        - speaker_emb: [B, spk_dim]
-        - labels: [B, speech_seq_len] (-100 for non-masked tokens)
-        """
-        text_tokens = batch["text_tokens"].to(self.device)
-        prompt_tokens = batch["prompt_tokens"].to(self.device)
-        masked_speech_tokens = batch["masked_speech_tokens"].to(self.device)
-        speaker_emb = batch["speaker_emb"].to(self.device)
-        labels = batch["labels"].to(self.device)
+        original_t3 = self.t3
+        def patched_forward(
+            t3_cond,
+            text_tokens,
+            text_token_lens,
+            speech_tokens,
+            speech_token_lens,
+            training=True,
+            **kwargs
+        ):
 
-        # Forward pass through T3 Flash LLaMA backbone
-        # Returns logits over speech vocabulary: [B, speech_seq_len, vocab_size]
-        logits = self.t3(
-            text_tokens=text_tokens,
-            prompt_tokens=prompt_tokens,
-            speech_tokens=masked_speech_tokens,
-            speaker_emb=speaker_emb
+            embeds, len_cond = original_t3.prepare_input_embeds(
+                t3_cond=t3_cond,
+                text_tokens=text_tokens,
+                speech_tokens=speech_tokens,
+            )
+
+            batch_size = text_tokens.size(0)
+            len_text = text_tokens.size(1)
+            len_speech = speech_tokens.size(1)
+
+            attn_mask = create_t3_attention_mask(
+                batch_size=batch_size,
+                len_cond=len_cond,
+                len_text=len_text,
+                len_speech=len_speech,
+                text_token_lens=text_token_lens,
+                speech_token_lens=speech_token_lens,
+                device=embeds.device
+            )
+
+            tfmr_out = original_t3.tfmr.forward(
+                input_ids=None,
+                inputs_embeds=embeds,
+                attention_mask=attn_mask,
+                output_hidden_states=True,
+                return_dict=True,
+                use_cache=(not training),
+            )
+
+            hidden_states = tfmr_out.hidden_states[-1]
+
+            B, _, dim = hidden_states.shape
+            device, dtype = hidden_states.device, hidden_states.dtype
+            text_latents = torch.zeros(B, len_text, dim, dtype=dtype, device=device)
+            speech_latents = torch.zeros(B, len_speech, dim, dtype=dtype, device=device)
+            ttl, stl = text_token_lens, speech_token_lens
+
+            for i in range(B):
+                text_end = len_cond + ttl[i].item()
+                speech_start = len_cond + len_text
+                speech_end = speech_start + stl[i].item()
+                text_latents[i, :ttl[i]] = hidden_states[i, len_cond:text_end]
+                speech_latents[i, :stl[i]] = hidden_states[i, speech_start:speech_end]
+
+            text_logits = original_t3.text_head(text_latents)
+            speech_logits = original_t3.speech_head(speech_latents)
+
+            class T3OutputContainer:
+                def __init__(self, speech_logits, text_logits, hidden_states):
+                    self.speech_logits = speech_logits
+                    self.text_logits = text_logits
+                    self.hidden_states = hidden_states
+
+            return T3OutputContainer(
+                speech_logits=speech_logits,
+                text_logits=text_logits,
+                hidden_states=hidden_states
+            )
+
+        self.t3.forward = patched_forward
+
+    def forward(
+        self,
+        text_tokens: Optional[torch.Tensor] = None,
+        text_token_lens: Optional[torch.Tensor] = None,
+        prompt_tokens: Optional[torch.Tensor] = None,
+        prompt_token_lens: Optional[torch.Tensor] = None,
+        masked_speech_tokens: Optional[torch.Tensor] = None,
+        speech_token_lens: Optional[torch.Tensor] = None,
+        speaker_emb: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        text_tokens = text_tokens.to(self.device)
+        prompt_tokens = prompt_tokens.to(self.device)
+        masked_speech_tokens = masked_speech_tokens.to(self.device)
+        speaker_emb = speaker_emb.to(self.device)
+        labels = labels.to(self.device)
+
+        batch_size = text_tokens.size(0)
+
+        text_token_lens = text_token_lens.to(self.device) if text_token_lens is not None \
+            else torch.full((batch_size,), text_tokens.size(1), dtype=torch.long, device=self.device)
+        speech_token_lens = speech_token_lens.to(self.device) if speech_token_lens is not None \
+            else torch.full((batch_size,), masked_speech_tokens.size(1), dtype=torch.long, device=self.device)
+        prompt_token_lens = prompt_token_lens.to(self.device) if prompt_token_lens is not None \
+            else torch.full((batch_size,), prompt_tokens.size(1), dtype=torch.long, device=self.device)
+
+        emotion_adv = 0.5 * torch.ones(batch_size, 1, 1, device=self.device)
+
+        t3_cond = T3Cond(
+            speaker_emb=speaker_emb,
+            cond_prompt_speech_tokens=prompt_tokens,
+            emotion_adv=emotion_adv
         )
 
-        # Reshape logits and labels for CrossEntropyLoss computation
+        out = self.t3(
+            t3_cond=t3_cond,
+            text_tokens=text_tokens,
+            text_token_lens=text_token_lens,
+            speech_tokens=masked_speech_tokens,
+            speech_token_lens=speech_token_lens
+        )
+
+        if hasattr(out, "speech_logits"):
+            logits = out.speech_logits
+        elif hasattr(out, "logits"):
+            logits = out.logits
+        elif isinstance(out, torch.Tensor):
+            logits = out
+        elif isinstance(out, (list, tuple)):
+            logits = out[0]
+        else:
+            logits = out
+
         vocab_size = logits.size(-1)
         loss = self.loss_fn(
             logits.view(-1, vocab_size),
@@ -105,9 +231,7 @@ class ChatterboxFlashForTraining(nn.Module):
         }
 
     def save_checkpoint(self, output_dir: Optional[str] = None):
-        """
-        Saves trained LoRA weights or Full model checkpoint.
-        """
+
         save_path = output_dir if output_dir is not None else self.config.output_dir
         os.makedirs(save_path, exist_ok=True)
 
@@ -120,9 +244,6 @@ class ChatterboxFlashForTraining(nn.Module):
 
 
 def build_model_for_training(config: Optional[TrainConfig] = None) -> ChatterboxFlashForTraining:
-    """
-    Factory function to initialize ChatterboxFlashForTraining from a TrainConfig instance.
-    """
     if config is None:
         config = TrainConfig()
     return ChatterboxFlashForTraining(config=config)

@@ -1,12 +1,11 @@
 import os
 import sys
 import logging
-import argparse
+import warnings
 import torch
 from transformers import Trainer, TrainingArguments
 from safetensors.torch import save_file
 
-# Add project root directory to Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.config import TrainConfig
@@ -16,24 +15,19 @@ from src.model import build_model_for_training
 from src.inference_callback import InferenceCallback
 from src.preprocess import preprocess
 
-# Disable parallel tokenizers warning
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=PendingDeprecationWarning)
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("ChatterboxFlashTrain")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Chatterbox-Flash Fine-Tuning Training Entry Point")
-    parser.add_argument("--config", type=str, default=None, help="Path to optional training YAML config file")
-    args = parser.parse_args()
 
-    # 1. Initialize Configuration
-    if args.config and os.path.exists(args.config):
-        cfg = TrainConfig.from_yaml(args.config)
-    else:
-        cfg = TrainConfig()
+
+    cfg = TrainConfig()
 
     logger.info("==================================================")
     logger.info("   Starting Chatterbox-Flash Fine-Tuning Pipeline ")
@@ -45,7 +39,6 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Execution Device: {device}")
 
-    # 2. Preprocessing (Extract features to .pt files if not already cached)
     if not os.path.exists(cfg.preprocessed_dir) or len(os.listdir(cfg.preprocessed_dir)) == 0:
         logger.info("Preprocessed feature directory empty. Running preprocessing step...")
         preprocess(
@@ -59,11 +52,10 @@ def main():
     else:
         logger.info(f"Preprocessed features found in '{cfg.preprocessed_dir}'. Skipping preprocessing step.")
 
-    # 3. Initialize Model Wrapper
+
     logger.info("Initializing Chatterbox-Flash model wrapper for training...")
     model_wrapper = build_model_for_training(cfg)
 
-    # 4. Initialize Dataset and Collator
     logger.info("Initializing Dataset and Flash Block-Diffusion Data Collator...")
     train_dataset = ChatterboxFlashDataset(
         processed_dir=cfg.preprocessed_dir,
@@ -80,14 +72,12 @@ def main():
         max_mask_ratio=cfg.max_mask_ratio
     )
 
-    # 5. Setup Callbacks
     callbacks = []
     if cfg.eval_prompt_path and os.path.exists(cfg.eval_prompt_path):
         logger.info(f"Audio generation callback enabled. Samples will be saved every {cfg.eval_steps} steps.")
         inference_cb = InferenceCallback(model_wrapper.tts_engine, cfg)
         callbacks.append(inference_cb)
 
-    # 6. HuggingFace Training Arguments
     training_args = TrainingArguments(
         output_dir=cfg.output_dir,
         per_device_train_batch_size=cfg.batch_size,
@@ -111,7 +101,6 @@ def main():
         dataloader_pin_memory=True
     )
 
-    # 7. Initialize HuggingFace Trainer
     trainer = Trainer(
         model=model_wrapper,
         args=training_args,
@@ -120,11 +109,9 @@ def main():
         callbacks=callbacks
     )
 
-    # 8. Start Training Loop
     logger.info("Starting training loop...")
     trainer.train()
 
-    # 9. Save Final Model Checkpoint
     logger.info("Training complete. Saving final model weights...")
     os.makedirs(cfg.output_dir, exist_ok=True)
 
@@ -136,7 +123,6 @@ def main():
         final_model_path = os.path.join(cfg.output_dir, "t3_flash_tr_full.safetensors")
         save_file(model_wrapper.t3.state_dict(), final_model_path)
         logger.info(f"Full model checkpoint saved successfully to: '{final_model_path}'")
-
 
 if __name__ == "__main__":
     main()

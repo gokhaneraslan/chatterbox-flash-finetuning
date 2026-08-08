@@ -3,15 +3,10 @@ import random
 from torch.nn.utils.rnn import pad_sequence
 from src.config import TrainConfig
 
-# Global configuration instance
 cfg = TrainConfig()
 
-
 class FlashDataCollator:
-    """
-    Data Collator for Chatterbox-Flash Block-Diffusion Masked Training.
-    Handles dynamic batch padding and applies random token masking for Block Diffusion.
-    """
+
     def __init__(
         self,
         mask_token_id: int = cfg.mask_token_id,
@@ -27,69 +22,71 @@ class FlashDataCollator:
         self.max_mask_ratio = max_mask_ratio
 
     def __call__(self, batch):
-        # Filter out corrupted or None items
+
         batch = [item for item in batch if item is not None]
         if not batch:
             return {}
 
-        # 1. Pad Text Tokens
         text_tokens = pad_sequence(
             [x["text_tokens"] for x in batch],
             batch_first=True,
             padding_value=self.pad_token_id
         )
-        text_lens = torch.tensor([len(x["text_tokens"]) for x in batch], dtype=torch.long)
+        text_token_lens = torch.tensor([len(x["text_tokens"]) for x in batch], dtype=torch.long)
 
-        # 2. Pad Prompt Tokens
         prompt_tokens = pad_sequence(
             [x["prompt_tokens"] for x in batch],
             batch_first=True,
             padding_value=self.pad_token_id
         )
-        prompt_lens = torch.tensor([len(x["prompt_tokens"]) for x in batch], dtype=torch.long)
+        prompt_token_lens = torch.tensor([len(x["prompt_tokens"]) for x in batch], dtype=torch.long)
 
-        # 3. Pad Speech Tokens (Clean Target Speech)
         clean_speech_tokens = pad_sequence(
             [x["speech_tokens"] for x in batch],
             batch_first=True,
             padding_value=self.pad_token_id
         )
-        speech_lens = torch.tensor([len(x["speech_tokens"]) for x in batch], dtype=torch.long)
+        speech_token_lens = torch.tensor([len(x["speech_tokens"]) for x in batch], dtype=torch.long)
 
-        # 4. Stack Speaker Embeddings
         speaker_embs = torch.stack([x["speaker_emb"] for x in batch])
 
-        # 5. Apply Block-Diffusion Masking to Target Speech Tokens
         masked_speech_tokens = clean_speech_tokens.clone()
         labels = torch.full_like(clean_speech_tokens, fill_value=-100)  # Default ignore_index for CrossEntropyLoss
 
         batch_size, max_speech_seq_len = clean_speech_tokens.shape
 
         for i in range(batch_size):
-            seq_len = speech_lens[i].item()
+            seq_len = speech_token_lens[i].item()
             if seq_len == 0:
                 continue
 
-            # Pick a random masking ratio for this sample
             mask_ratio = random.uniform(self.min_mask_ratio, self.max_mask_ratio)
-            num_mask = max(1, int(seq_len * mask_ratio))
+            target_mask_count = max(1, int(seq_len * mask_ratio))
 
-            # Randomly select indices to mask within valid speech length
-            mask_indices = torch.randperm(seq_len)[:num_mask]
+            mask_bool = torch.zeros(seq_len, dtype=torch.bool)
+            num_masked = 0
+            attempts = 0
+            max_attempts = 50
 
-            # Replace target tokens with [MASK] token
+            while num_masked < target_mask_count and attempts < max_attempts:
+                attempts += 1
+                start_idx = random.randint(0, max(0, seq_len - 1))
+                end_idx = min(seq_len, start_idx + self.block_size)
+                
+                mask_bool[start_idx:end_idx] = True
+                num_masked = mask_bool.sum().item()
+
+            mask_indices = torch.where(mask_bool)[0]
             masked_speech_tokens[i, mask_indices] = self.mask_token_id
-
-            # Set label for loss computation ONLY at masked positions
             labels[i, mask_indices] = clean_speech_tokens[i, mask_indices]
 
         return {
             "text_tokens": text_tokens,
-            "text_lens": text_lens,
+            "text_token_lens": text_token_lens,
             "prompt_tokens": prompt_tokens,
-            "prompt_lens": prompt_lens,
+            "prompt_token_lens": prompt_token_lens,
             "masked_speech_tokens": masked_speech_tokens,
             "labels": labels,
-            "speech_lens": speech_lens,
+            "speech_token_lens": speech_token_lens,
             "speaker_emb": speaker_embs
         }

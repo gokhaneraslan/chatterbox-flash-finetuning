@@ -24,15 +24,17 @@ Chatterbox-Flash replaces standard autoregressive TTS decoders with a **parallel
 Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/your-username/chatterbox-flash-tr.git
+git clone https://github.com/gokhaneraslan/chatterbox-flash-finetuning.git
 cd chatterbox-flash-tr
 
 pip install -r requirements.txt
+
+pip install --no-deps chatterbox-tts==0.1.7
 ```
 
 ### 2. Download Pretrained Models & Setup Tokenizer
 
-Run the automated setup script to download base model checkpoints to `models/` and configure `tokenizer.json`:
+Run the automated setup script to download base model checkpoints to `src/models/` and configure `tokenizer.json`:
 
 ```bash
 python setup.py
@@ -69,7 +71,7 @@ Place corresponding audio files (`.wav` or `.mp3`) into `data/raw/wavs/`.
 Extract offline features into `data/processed/`:
 
 ```bash
-python scripts/preprocess.py \
+python src/preprocess.py \
     --metadata_path data/raw/metadata.csv \
     --wav_dir data/raw/wavs \
     --output_dir data/processed
@@ -80,7 +82,7 @@ python scripts/preprocess.py \
 Start fine-tuning using LoRA (default) or YAML configuration:
 
 ```bash
-python scripts/train.py --config configs/lora_tr.yaml
+python train.py
 ```
 
 Generated sample audio files will be saved periodically in `inference_samples/step_N/`.
@@ -92,8 +94,8 @@ Generated sample audio files will be saved periodically in `inference_samples/st
 ### Synthesize Speech from Trained Checkpoint
 
 ```bash
-python scripts/infer.py \
-    --audio_prompt data/raw/reference.wav \
+python infer.py \
+    --audio_prompt reference_wavs/test.wav \
     --lora_dir checkpoints/chatterbox_flash_tr_lora \
     --text "Merhaba, Chatterbox-Flash modeliyle Türkçe ses sentezliyoruz."
 ```
@@ -103,8 +105,8 @@ python scripts/infer.py \
 Merge LoRA adapters into a single `t3_flash.safetensors` model for deployment:
 
 ```bash
-python scripts/merge_lora.py \
-    --base_model_dir models \
+python merge_lora.py \
+    --base_model_dir src/models \
     --lora_dir checkpoints/chatterbox_flash_tr_lora \
     --output_dir merged_model
 ```
