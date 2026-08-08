@@ -24,8 +24,8 @@ Chatterbox-Flash replaces standard autoregressive TTS decoders with a **parallel
 Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/your-username/chatterbox-flash-tr.git
-cd chatterbox-flash-tr
+git clone https://github.com/gokhaneraslan/chatterbox-flash-finetuning.git
+cd chatterbox-flash-finetuning
 
 pip install -r requirements.txt
 ```
