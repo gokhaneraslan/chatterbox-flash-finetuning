@@ -25,7 +25,7 @@ Clone the repository and install dependencies:
 
 ```bash
 git clone https://github.com/gokhaneraslan/chatterbox-flash-finetuning.git
-cd chatterbox-flash-tr
+cd chatterbox-flash-finetuning
 
 pip install -r requirements.txt
 
