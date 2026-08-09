@@ -1,5 +1,3 @@
----
-
 # Chatterbox-Flash: Ultra-Fast Block-Diffusion Fine-Tuning & LoRA Kit 🎙️⚡
 
 A modular, production-ready fine-tuning and inference infrastructure designed specifically for **Resemble AI's Chatterbox-Flash** model.
@@ -19,7 +17,7 @@ This framework enables lightning-fast adaptation of Chatterbox-Flash to new lang
 
 This repository supports both parameter-efficient adaptation and full-checkpoint training, controllable via `use_lora` in `src/config.py`.
 
-### 1. LoRA Mode (`use_lora = True`) — 🌟 HIGHLY RECOMMENDED
+### 1. LoRA Mode (`use_lora = True`) — RECOMMENDED
 * **What is it?** LoRA (Low-Rank Adaptation) freezes the 520M LLaMA backbone and only trains low-rank adapter matrices alongside target language embeddings (`text_emb` and `speech_emb`).
 * **Best for:** Small to medium datasets (**10 hours or less**), single-speaker voice cloning, or rapid language adaptation.
 * **Benefits:** Prevents catastrophic forgetting, reduces GPU VRAM consumption by ~60%, speeds up training, and prevents overfitting on small datasets.
@@ -51,31 +49,6 @@ In this repository, we patched `T3.forward()` with a **Dynamic 2D Block-Causal A
 
 ---
 
-## 📁 Folder Structure
-
-```text
-chatterbox-flash-finetuning/
-├── src/
-│   ├── config.py                                  # All hyperparameters & path settings
-│   ├── dataset.py                                 # Feature tensor loading & CFG dropout
-│   ├── collator.py                                # Dynamic padding & Block Diffusion masking
-│   ├── model.py                                   # Training wrapper & attention mask patch
-│   ├── preprocess.py                              # Offline feature extraction (24kHz/16kHz)
-│   ├── infer.py                                   # Fast zero-shot TTS inference script
-│   ├── merge_lora.py                              # Bakes LoRA weights into standalone model
-│   └── _chatterbox_flash/                         # Internal Chatterbox-Flash engine
-├── data/
-│   ├── raw/
-│   │   ├── metadata.csv                           # LJSpeech, CSV, JSON, or JSONL metadata
-│   │   └── wavs/                                  # Audio files (.wav or .mp3)
-│   └── processed/                                 # Extracted offline feature tensors (.pt)
-├── checkpoints/                                   # Saved LoRA adapters / model checkpoints
-├── inference_samples/                             # Auto-generated test audio during training
-├── requirements.txt                               # Dependencies
-└── README.md                                      # Project documentation
-```
-
----
 
 ## 🚀 Installation
 
@@ -99,7 +72,10 @@ Clone the repository and install requirements:
 ```bash
 git clone https://github.com/gokhaneraslan/chatterbox-flash-finetuning.git
 cd chatterbox-flash-finetuning
+
 pip install -r requirements.txt
+
+python setup.py
 ```
 
 ---
@@ -145,7 +121,7 @@ use_lora: bool = True               # True: Fast LoRA Training | False: Full Fin
 batch_size: int = 16                # Batch size per GPU
 grad_accum: int = 2                 # Gradient accumulation steps
 learning_rate: float = 1e-4         # 1e-4 for LoRA, 2e-5 for Full
-num_epochs: int = 4                 # 3-5 epochs is optimal for large datasets
+num_epochs: int = 5                 # 3-5 epochs is optimal for large datasets
 block_size: int = 16                # Block size D for parallel block diffusion
 ```
 
