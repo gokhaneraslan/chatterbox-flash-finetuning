@@ -64,7 +64,7 @@ class ChatterboxFlashDataset(Dataset):
             eot = torch.tensor([self.eot_token], dtype=torch.long)
             text_tokens = torch.cat([sot, text_tokens, eot])
 
-            if speech_tokens.size(0) > self.max_speech_len:
+            if speech_tokens.size(0) >= self.max_speech_len:
                 speech_tokens = speech_tokens[: self.max_speech_len - 1]
                 stop_tensor = torch.tensor([self.speech_stop_id], dtype=torch.long)
                 speech_tokens = torch.cat([speech_tokens, stop_tensor])
@@ -72,16 +72,14 @@ class ChatterboxFlashDataset(Dataset):
                 stop_tensor = torch.tensor([self.speech_stop_id], dtype=torch.long)
                 speech_tokens = torch.cat([speech_tokens, stop_tensor])
 
-            if random.random() < self.uncond_prob:
-                speaker_emb = torch.zeros_like(speaker_emb)
-                prompt_tokens = torch.full((1,), self.mask_token_id, dtype=torch.long)
-
+            is_uncond = random.random() < self.uncond_prob
             return {
                 "id": filename.replace(".pt", ""),
                 "text_tokens": text_tokens,
                 "speech_tokens": speech_tokens,
                 "speaker_emb": speaker_emb,
-                "prompt_tokens": prompt_tokens
+                "prompt_tokens": prompt_tokens,
+                "is_uncond": torch.tensor(is_uncond, dtype=torch.bool)
             }
 
         except Exception as e:

@@ -30,22 +30,14 @@ def omnivoice_cfg_log_probs(
     return c_log_probs + guidance_scale * (c_log_probs - u_log_probs)
 
 
-def apply_zero_text_cfg_from_logits(
-    logits_cond: Tensor,
-    logits_u: Tensor,
-    guidance_scale: float,
-) -> Tensor:
-    """CFG combination from two logit tensors of identical shape.
-
-    Operates on log-softmax so the result is a valid scoring/sampling logit
-    (softmax recovers the guided distribution).
-    """
+def apply_zero_text_cfg_from_logits(logits_cond, logits_u, guidance_scale):
     if guidance_scale == 0.0:
         return logits_cond
-    c_log = F.log_softmax(logits_cond, dim=-1)
-    u_log = F.log_softmax(logits_u, dim=-1)
-    return omnivoice_cfg_log_probs(c_log, u_log, guidance_scale)
-
+    c_log = F.log_softmax(logits_cond.float(), dim=-1)
+    u_log = F.log_softmax(logits_u.float(), dim=-1)
+    out = omnivoice_cfg_log_probs(c_log, u_log, guidance_scale)
+    out = torch.nan_to_num(out, nan=-1e4, posinf=1e4, neginf=-1e4)
+    return out.to(logits_cond.dtype)
 
 def pmi_cfg_combine(
     pmi_c: Tensor,

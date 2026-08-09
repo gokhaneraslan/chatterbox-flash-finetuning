@@ -24,7 +24,6 @@ class TrainConfig:
     use_vad: bool = True                                      # Enable non-destructive Silero VAD silence trimming
 
     # --- Tokenizer & Vocabulary Constants (Synchronized with ChatterboxFlashT3) ---
-    text_vocab_size: int = 2454                               # Multilingual Chatterbox text tokenizer vocab size (2454 for TR)
     start_text_token: int = 255                               # [START] text token ID
     stop_text_token: int = 0                                  # [STOP] text token ID
     speech_stop_id: int = 6562                                # [STOP_SPEECH] token ID for S3Tokenizer (6562)
@@ -69,7 +68,7 @@ class TrainConfig:
     )
 
     # --- Multi-Sentence Evaluation / Audio Sample Callback ---
-    eval_prompt_path: Optional[str] = "src/reference_wavs/test.wav"
+    eval_prompt_path: Optional[str] = "reference_wavs/test.wav"
     eval_steps: int = 1000                                    # Generate sample audio every N steps
     eval_sample_texts: List[str] = field(
         default_factory=lambda: [

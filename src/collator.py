@@ -11,18 +11,20 @@ class FlashDataCollator:
         self,
         mask_token_id: int = cfg.mask_token_id,
         pad_token_id: int = cfg.pad_token_id,
+        text_pad_id: int = cfg.stop_text_token,
         block_size: int = cfg.block_size,
         min_mask_ratio: float = cfg.min_mask_ratio,
         max_mask_ratio: float = cfg.max_mask_ratio
     ):
         self.mask_token_id = mask_token_id
         self.pad_token_id = pad_token_id
+        self.text_pad_id = text_pad_id
         self.block_size = block_size
         self.min_mask_ratio = min_mask_ratio
         self.max_mask_ratio = max_mask_ratio
 
     def __call__(self, batch):
-
+        
         batch = [item for item in batch if item is not None]
         if not batch:
             return {}
@@ -30,7 +32,7 @@ class FlashDataCollator:
         text_tokens = pad_sequence(
             [x["text_tokens"] for x in batch],
             batch_first=True,
-            padding_value=self.pad_token_id
+            padding_value=self.text_pad_id
         )
         text_token_lens = torch.tensor([len(x["text_tokens"]) for x in batch], dtype=torch.long)
 
@@ -51,7 +53,7 @@ class FlashDataCollator:
         speaker_embs = torch.stack([x["speaker_emb"] for x in batch])
 
         masked_speech_tokens = clean_speech_tokens.clone()
-        labels = torch.full_like(clean_speech_tokens, fill_value=-100)  # Default ignore_index for CrossEntropyLoss
+        labels = torch.full_like(clean_speech_tokens, fill_value=-100)
 
         batch_size, max_speech_seq_len = clean_speech_tokens.shape
 
@@ -88,5 +90,6 @@ class FlashDataCollator:
             "masked_speech_tokens": masked_speech_tokens,
             "labels": labels,
             "speech_token_lens": speech_token_lens,
-            "speaker_emb": speaker_embs
+            "speaker_emb": speaker_embs,
+            "is_uncond": torch.stack([x["is_uncond"] for x in batch])
         }

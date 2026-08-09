@@ -5,41 +5,48 @@ import torch.nn as nn
 from typing import Optional, Dict
 
 from peft import LoraConfig, get_peft_model
-from _chatterbox_flash._chatterbox.models.t3.modules.cond_enc import T3Cond
+from src._chatterbox_flash._chatterbox.models.t3.modules.cond_enc import T3Cond
 from src._chatterbox_flash import ChatterboxFlashTTS
 from src.config import TrainConfig
 
 logger = logging.getLogger(__name__)
 
-
-def create_t3_attention_mask(
-    batch_size: int,
-    len_cond: int,
-    len_text: int,
-    len_speech: int,
-    text_token_lens: torch.Tensor,
-    speech_token_lens: torch.Tensor,
-    device: torch.device
-) -> torch.Tensor:
-
+def create_t3_block_causal_attention_mask(
+    batch_size,
+    len_cond, 
+    len_text, 
+    len_speech, 
+    block_size,
+    text_token_lens, 
+    speech_token_lens, 
+    device, 
+    dtype
+):
     total_len = len_cond + len_text + len_speech
-    mask = torch.zeros((batch_size, total_len), dtype=torch.bool, device=device)
+    prefix_len = len_cond + len_text
 
+    valid = torch.zeros((batch_size, total_len), dtype=torch.bool, device=device)
     for i in range(batch_size):
-        # 1. Conditioning prefix is ALWAYS valid
-        mask[i, :len_cond] = True
+        valid[i, :len_cond] = True
+        ttl = min(int(text_token_lens[i]), len_text)
+        valid[i, len_cond:len_cond + ttl] = True
+        stl = min(int(speech_token_lens[i]), len_speech)
+        valid[i, prefix_len:prefix_len + stl] = True
 
-        # 2. Valid text tokens (skip text padding)
-        ttl = text_token_lens[i].item()
-        mask[i, len_cond : len_cond + ttl] = True
+    allow = torch.zeros((total_len, total_len), dtype=torch.bool, device=device)
+    prefix_idx = torch.arange(prefix_len, device=device)
+    allow[:prefix_len, :prefix_len] = prefix_idx[:, None] >= prefix_idx[None, :]   # prefix: causal
 
-        # 3. Valid speech tokens (skip speech padding)
-        stl = speech_token_lens[i].item()
-        speech_start = len_cond + len_text
-        mask[i, speech_start : speech_start + stl] = True
+    speech_block_id = torch.arange(len_speech, device=device) // block_size
+    allow[prefix_len:, :prefix_len] = True                                         # speech -> tüm prefix
+    allow[prefix_len:, prefix_len:] = speech_block_id[:, None] >= speech_block_id[None, :]  # blok-nedensel
 
-    return mask
-
+    neg_inf = torch.finfo(dtype).min
+    key_valid = valid[:, None, :]
+    combined = allow[None, :, :] & key_valid
+    additive = torch.zeros((batch_size, total_len, total_len), dtype=dtype, device=device)
+    additive.masked_fill_(~combined, neg_inf)
+    return additive[:, None, :, :]
 
 class ChatterboxFlashForTraining(nn.Module):
     
@@ -83,6 +90,7 @@ class ChatterboxFlashForTraining(nn.Module):
             self.t3 = get_peft_model(self.t3, peft_config)
             if hasattr(self.t3, "enable_input_require_grads"):
                 self.t3.enable_input_require_grads()
+            self.tts_engine.t3 = self.t3
             self.t3.print_trainable_parameters()
         else:
             logger.info("Configuring model for Full Fine-Tuning (All parameters trainable)...")
@@ -101,6 +109,7 @@ class ChatterboxFlashForTraining(nn.Module):
             speech_tokens,
             speech_token_lens,
             training=True,
+            is_uncond=None,
             **kwargs
         ):
 
@@ -114,14 +123,27 @@ class ChatterboxFlashForTraining(nn.Module):
             len_text = text_tokens.size(1)
             len_speech = speech_tokens.size(1)
 
-            attn_mask = create_t3_attention_mask(
+            if is_uncond is not None and is_uncond.any():
+                idx = is_uncond.nonzero(as_tuple=True)[0]
+                embeds = embeds.clone()
+                embeds[idx, :len_cond, :] = 0.0
+                text_positions = torch.arange(len_text, device=embeds.device)[None, :]
+                text_valid = text_positions < text_token_lens[idx][:, None]
+                text_slice = embeds[idx, len_cond:len_cond + len_text, :]
+                embeds[idx, len_cond:len_cond + len_text, :] = torch.where(
+                    text_valid.unsqueeze(-1), torch.zeros_like(text_slice), text_slice,
+                )
+
+            attn_mask = create_t3_block_causal_attention_mask(
                 batch_size=batch_size,
                 len_cond=len_cond,
                 len_text=len_text,
                 len_speech=len_speech,
+                block_size=self.config.block_size,
                 text_token_lens=text_token_lens,
                 speech_token_lens=speech_token_lens,
-                device=embeds.device
+                device=embeds.device,
+                dtype=embeds.dtype,
             )
 
             tfmr_out = original_t3.tfmr.forward(
@@ -165,6 +187,10 @@ class ChatterboxFlashForTraining(nn.Module):
 
         self.t3.forward = patched_forward
 
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        if hasattr(self.t3, "gradient_checkpointing_enable"):
+            self.t3.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
+
     def forward(
         self,
         text_tokens: Optional[torch.Tensor] = None,
@@ -177,13 +203,18 @@ class ChatterboxFlashForTraining(nn.Module):
         labels: Optional[torch.Tensor] = None,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
+
+        model_dtype = next(self.t3.parameters()).dtype
+
         text_tokens = text_tokens.to(self.device)
         prompt_tokens = prompt_tokens.to(self.device)
         masked_speech_tokens = masked_speech_tokens.to(self.device)
-        speaker_emb = speaker_emb.to(self.device)
         labels = labels.to(self.device)
 
         batch_size = text_tokens.size(0)
+
+        speaker_emb = speaker_emb.to(device=self.device, dtype=model_dtype)
+        emotion_adv = 0.5 * torch.ones(batch_size, 1, 1, device=self.device, dtype=model_dtype)
 
         text_token_lens = text_token_lens.to(self.device) if text_token_lens is not None \
             else torch.full((batch_size,), text_tokens.size(1), dtype=torch.long, device=self.device)
@@ -192,20 +223,24 @@ class ChatterboxFlashForTraining(nn.Module):
         prompt_token_lens = prompt_token_lens.to(self.device) if prompt_token_lens is not None \
             else torch.full((batch_size,), prompt_tokens.size(1), dtype=torch.long, device=self.device)
 
-        emotion_adv = 0.5 * torch.ones(batch_size, 1, 1, device=self.device)
-
         t3_cond = T3Cond(
             speaker_emb=speaker_emb,
             cond_prompt_speech_tokens=prompt_tokens,
+            cond_prompt_speech_lens=prompt_token_lens,
             emotion_adv=emotion_adv
-        )
+        ).to(device=self.device, dtype=model_dtype)
 
+        is_uncond = kwargs.get("is_uncond")
+        if is_uncond is not None:
+            is_uncond = is_uncond.to(self.device)
+        
         out = self.t3(
             t3_cond=t3_cond,
             text_tokens=text_tokens,
             text_token_lens=text_token_lens,
             speech_tokens=masked_speech_tokens,
-            speech_token_lens=speech_token_lens
+            speech_token_lens=speech_token_lens,
+            is_uncond=is_uncond
         )
 
         if hasattr(out, "speech_logits"):

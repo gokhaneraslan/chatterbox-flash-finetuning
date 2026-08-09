@@ -197,16 +197,8 @@ class Perceiver(nn.Module):
         # Initialize the attention block
         self.attn = AttentionBlock2(embedding_dim, num_attn_heads)
 
-    def forward(self, h):
-        """
-        Forward pass of the perceiver module.
-        :param h: Input tensor
-        :return: Output after applying attention mechanisms
-        """
-        # Expand the pre-attention query to match the batch size of the input
+    def forward(self, h, mask=None):
         query_ = self.pre_attention_query.expand(h.shape[0], -1, -1)
-        # Apply the first attention mechanism (cross-attention)
-        pre_att = self.attn(query_, h)
-        # Apply the second attention mechanism (self-attention)
+        pre_att = self.attn(query_, h, mask=mask)
         attn = self.attn(pre_att, pre_att)
         return attn

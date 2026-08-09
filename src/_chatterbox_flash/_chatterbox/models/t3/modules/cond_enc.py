@@ -19,6 +19,7 @@ class T3Cond:
     clap_emb: Optional[Tensor] = None
     cond_prompt_speech_tokens: Optional[Tensor] = None
     cond_prompt_speech_emb: Optional[Tensor] = None
+    cond_prompt_speech_lens: Optional[Tensor] = None
     emotion_adv: Optional[Tensor] = 0.5
 
     def to(self, *, device=None, dtype=None):
@@ -79,7 +80,21 @@ class T3CondEnc(nn.Module):
         if cond_prompt_speech_emb is None:
             cond_prompt_speech_emb = empty  # (B, 0, dim)
         elif self.hp.use_perceiver_resampler:
-            cond_prompt_speech_emb = self.perceiver(cond_prompt_speech_emb)
+            prompt_mask = None
+            zero_rows = None
+            if cond.cond_prompt_speech_lens is not None:
+                lens = cond.cond_prompt_speech_lens.to(cond_prompt_speech_emb.device)
+                zero_rows = (lens == 0)
+                safe_lens = lens.clone()
+                safe_lens[zero_rows] = 1
+                L = cond_prompt_speech_emb.size(1)
+                positions = torch.arange(L, device=cond_prompt_speech_emb.device)[None, :]
+                valid = positions < safe_lens[:, None]
+                prompt_mask = valid[:, None, None, :]
+            cond_prompt_speech_emb = self.perceiver(cond_prompt_speech_emb, mask=prompt_mask)
+            if zero_rows is not None and zero_rows.any():
+                cond_prompt_speech_emb = cond_prompt_speech_emb.clone()
+                cond_prompt_speech_emb[zero_rows] = 0.0      
 
         # Emotion Adv: must provide a value if this model uses emotion conditioning
         cond_emotion_adv = empty  # (B, 0, dim)
