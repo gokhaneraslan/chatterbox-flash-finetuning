@@ -64,7 +64,7 @@ class TrainConfig:
         ]
     )
     lora_modules_to_save: List[str] = field(
-        default_factory=lambda: ["text_emb"]                  # CRITICAL: Saves & trains placeholder embeddings
+        default_factory=lambda: ["text_emb", "speech_emb"]    # CRITICAL: Saves & trains placeholder embeddings
     )
 
     # --- Multi-Sentence Evaluation / Audio Sample Callback ---

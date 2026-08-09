@@ -90,7 +90,6 @@ class ChatterboxFlashForTraining(nn.Module):
             self.t3 = get_peft_model(self.t3, peft_config)
             if hasattr(self.t3, "enable_input_require_grads"):
                 self.t3.enable_input_require_grads()
-            self.tts_engine.t3 = self.t3
             self.t3.print_trainable_parameters()
         else:
             logger.info("Configuring model for Full Fine-Tuning (All parameters trainable)...")
