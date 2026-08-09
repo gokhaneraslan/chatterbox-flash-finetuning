@@ -41,11 +41,13 @@ Chatterbox-Flash relies on a grapheme-based (character-level) tokenizer. To fine
 
 ---
 
-## 🛠️ Attention Padding Leakage Prevention
+## 🛠️ Attention Masking: Training ↔ Inference Parity
 
-Standard TTS implementations suffer from **padding leakage** when `batch_size > 1`: valid speech tokens erroneously attend to text/speech `PAD` tokens in the batch, causing acoustic degradation and stuttering.
+Standard TTS implementations suffer from **padding leakage** when `batch_size > 1`: valid tokens erroneously attend to `PAD` tokens in the batch, causing acoustic degradation and stuttering. We also found that training needs to see the *same* attention pattern the real block-diffusion engine uses at inference time — otherwise the model learns something subtly different from what it will actually do at generation time.
 
-In this repository, we patched `T3.forward()` with a **Dynamic 2D Block-Causal Attention Mask** (`create_t3_attention_mask`). This mask mathematically blocks attention scores to `PAD` tokens ($-\infty$), ensuring **zero padding leakage** and allowing training with large batch sizes (`batch_size = 16, 32`) with 100% mathematical purity!
+We patched `T3.forward()` with a **4D Block-Causal Attention Mask** (`create_t3_block_causal_attention_mask`), reverse-engineered directly from the real inference engine: each speech block can see itself and every block before it, but never a future block — matching exactly how the KV cache is built during generation. All `PAD` positions (text and speech) are fully masked out, guaranteeing zero padding leakage.
+
+A second, separate leak lived in the **Perceiver conditioning-prompt resampler**, which ignored padding entirely when batching reference prompts of different lengths. This is now masked too, via the same length-aware mechanism.
 
 ---
 
