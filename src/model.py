@@ -125,7 +125,8 @@ class ChatterboxFlashForTraining(nn.Module):
             if is_uncond is not None and is_uncond.any():
                 idx = is_uncond.nonzero(as_tuple=True)[0]
                 embeds = embeds.clone()
-                embeds[idx, :len_cond, :] = 0.0
+                EPS = 1e-6
+                embeds[idx, :len_cond, :] = torch.randn_like(embeds[idx, :len_cond, :]) * EPS
                 text_positions = torch.arange(len_text, device=embeds.device)[None, :]
                 text_valid = text_positions < text_token_lens[idx][:, None]
                 text_slice = embeds[idx, len_cond:len_cond + len_text, :]
